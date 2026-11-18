@@ -1,0 +1,8 @@
+# Project Titan — Live Global & Hyper-Local Telemetry Hub
+> Real-time, edge-cached aggregator for hyper-local community incident reports, live event maps, international space telemetry (ISS), global flight radar, and live commodity/crypto tickers.
+
+## Live Machine-Readable Endpoints
+- `/api/summary`: Aggregated real-time telemetry snapshot (JSON, updated every 15s)
+- `/local`: Interactive hyper-local event map and community incident feed
+- `/finance`: Spot Gold/Silver and real-time crypto indices
+- `/space`: Live ISS orbital coordinates and telemetry
