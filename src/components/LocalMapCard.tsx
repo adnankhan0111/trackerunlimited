@@ -1,177 +1,344 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
-import type { LatLngExpression } from 'leaflet';
-import { motion, AnimatePresence } from 'framer-motion';
-import { MapPin, Plus, ThumbsUp, Navigation } from 'lucide-react';
-import { useTitanStore, type LocalIncident } from '../store/useTitanStore';
+import { useEffect, useState } from 'react';
+import useSWR from 'swr';
+import axios from 'axios';
+import L from 'leaflet';
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  CircleMarker,
+  useMap,
+  useMapEvents,
+} from 'react-leaflet';
+import { motion } from 'framer-motion';
+import {
+  MapPin,
+  Plus,
+  Crosshair,
+  AlertTriangle,
+  RefreshCw,
+  Send,
+  X,
+} from 'lucide-react';
+import { useTitanStore } from '../store/useTitanStore';
 
-function RecenterMap({ center }: { center: LatLngExpression }) {
+type IncidentCategory = 'traffic' | 'weather' | 'outage' | 'emergency' | 'community';
+
+interface IncidentPin {
+  id: string;
+  title: string;
+  category: IncidentCategory;
+  lat: number;
+  lon: number;
+  createdAt: string;
+}
+
+interface IncidentsResponse {
+  incidents?: IncidentPin[];
+}
+
+const CATEGORY_META: Record<IncidentCategory, { label: string; color: string }> = {
+  traffic: { label: 'Traffic / Road', color: '#f59e0b' },
+  weather: { label: 'Weather Alert', color: '#38bdf8' },
+  outage: { label: 'Power / Net Outage', color: '#a855f7' },
+  emergency: { label: 'Emergency', color: '#ef4444' },
+  community: { label: 'Community Event', color: '#10b981' },
+};
+
+const fetcher = (url: string) =>
+  axios.get<IncidentsResponse>(url).then((r) => {
+    if (typeof r.data === 'string') {
+      throw new Error('Expected JSON, received HTML');
+    }
+    return r.data;
+  });
+
+const draftPinIcon = L.divIcon({
+  className: 'titan-draft-pin',
+  html: `<div style="width:18px;height:18px;border-radius:9999px;background:#22d3ee;border:3px solid #020617;box-shadow:0 0 12px #22d3ee;"></div>`,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+
+function MapCenterSync({
+  lat,
+  lon,
+  triggerKey,
+}: {
+  lat: number;
+  lon: number;
+  triggerKey: string;
+}) {
   const map = useMap();
-
   useEffect(() => {
-    map.setView(center, 13);
-  }, [center, map]);
-
+    map.flyTo([lat, lon], 11, { duration: 1.0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKey, map]);
   return null;
 }
 
-export const LocalMapCard: React.FC = () => {
-  const { coords, setCoords, incidents, addIncident, upvoteIncident } = useTitanStore();
-  const [showForm, setShowForm] = useState(false);
-  const [title, setTitle] = useState('');
-  const [type, setType] = useState<LocalIncident['type']>('Event');
+function MapClickHandler({
+  enabled,
+  onPick,
+}: {
+  enabled: boolean;
+  onPick: (lat: number, lon: number) => void;
+}) {
+  useMapEvents({
+    click(e) {
+      if (enabled) {
+        onPick(e.latlng.lat, e.latlng.lng);
+      }
+    },
+  });
+  return null;
+}
 
-  const mapCenter: LatLngExpression = [coords.lat, coords.lon];
+export function LocalMapCard() {
+  const { coords, setCoords } = useTitanStore();
+  const [isPinMode, setIsPinMode] = useState(false);
+  const [draftPos, setDraftPos] = useState<{ lat: number; lon: number } | null>(null);
+  const [title, setTitle] = useState('');
+  const [category, setCategory] = useState<IncidentCategory>('traffic');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const { data, isLoading, mutate } = useSWR<IncidentsResponse>('/api/incidents', fetcher, {
+    refreshInterval: 15000,
+    revalidateOnFocus: true,
+  });
+
+  const incidents = data?.incidents ?? [];
 
   const handleLocateMe = () => {
     if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition((pos) => {
-      setCoords(pos.coords.latitude, pos.coords.longitude, 'My Live GPS Sector');
-    });
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords(pos.coords.latitude, pos.coords.longitude, 'My GPS Location');
+      },
+      () => {
+        // Ignore denied geolocation gracefully
+      }
+    );
   };
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleCreatePin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
-    addIncident({
-      type,
-      title,
-      lat: coords.lat + (Math.random() - 0.5) * 0.015,
-      lon: coords.lon + (Math.random() - 0.5) * 0.015,
-    });
-    setTitle('');
-    setShowForm(false);
+    if (!draftPos || !title.trim()) return;
+
+    setSubmitting(true);
+    setSubmitError(null);
+
+    const newPin: IncidentPin = {
+      id: `pin-${Date.now()}`,
+      title: title.trim(),
+      category,
+      lat: draftPos.lat,
+      lon: draftPos.lon,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      // Optimistically show the pin immediately, then persist to Cloudflare KV
+      await mutate(
+        async (current) => {
+          const res = await axios.post<{ incident?: IncidentPin }>('/api/incidents', newPin);
+          const saved = res.data?.incident ?? newPin;
+          return { incidents: [saved, ...(current?.incidents ?? [])] };
+        },
+        {
+          optimisticData: { incidents: [newPin, ...incidents] },
+          rollbackOnError: true,
+          revalidate: true,
+        }
+      );
+
+      setTitle('');
+      setDraftPos(null);
+      setIsPinMode(false);
+    } catch {
+      setSubmitError('Could not save pin. Ensure /api/incidents KV is deployed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 18 }}
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4 }}
-      className="col-span-1 lg:col-span-2 bg-[#0d1323]/90 backdrop-blur-md border border-slate-800 rounded-2xl p-5 shadow-2xl"
+      className="lg:col-span-2 bg-[#0d1323] border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-4"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
-            <MapPin className="w-4 h-4" /> Hyper-Local Event & Incident Radar
+          <h2 className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+            <MapPin className="w-4 h-4" /> Hyper-Local Incident Radar — {coords.label}
           </h2>
-          <p className="text-xs text-slate-400">{coords.label}</p>
+          <p className="text-xs text-slate-400">
+            Live Cloudflare KV community pins • Syncs every 15s across all visitors
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleLocateMe}
-            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-mono bg-slate-950 text-slate-300 border border-slate-800 hover:border-cyan-500/50 transition cursor-pointer flex items-center gap-1.5"
           >
-            <Navigation className="w-3.5 h-3.5 text-cyan-400" /> Near Me
+            <Crosshair className="w-3.5 h-3.5 text-cyan-400" /> GPS
           </button>
+
           <button
             type="button"
-            onClick={() => setShowForm(!showForm)}
-            className="text-xs bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1 transition cursor-pointer"
+            onClick={() => {
+              setIsPinMode((v) => !v);
+              setDraftPos(null);
+              setSubmitError(null);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+              isPinMode
+                ? 'bg-rose-500 text-slate-950'
+                : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+            }`}
           >
-            <Plus className="w-3.5 h-3.5" /> Report Pin
+            {isPinMode ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+            {isPinMode ? 'Cancel Pin' : 'Report Incident'}
           </button>
+
+          <span className="text-[11px] font-mono text-emerald-400 bg-slate-950 border border-emerald-500/30 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+            <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
+            {incidents.length} LIVE
+          </span>
         </div>
       </div>
 
-      <AnimatePresence>
-        {showForm && (
-          <motion.form
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            onSubmit={handleSubmit}
-            className="overflow-hidden mb-4 bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row gap-2"
-          >
+      {/* Pin-Drop Instruction / Form */}
+      {isPinMode && (
+        <form
+          onSubmit={handleCreatePin}
+          className="bg-slate-950 border border-cyan-500/40 rounded-xl p-3.5 space-y-3 text-xs"
+        >
+          <div className="flex items-center justify-between text-cyan-300 font-mono">
+            <span>
+              {draftPos
+                ? `Selected: ${draftPos.lat.toFixed(4)}°, ${draftPos.lon.toFixed(4)}°`
+                : 'Step 1: Click anywhere on the map below to place your pin'}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
             <select
-              value={type}
-              onChange={(e) => setType(e.target.value as LocalIncident['type'])}
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200"
+              aria-label="Incident Category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value as IncidentCategory)}
+              className="bg-[#0d1323] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
             >
-              <option value="Event">Local Event</option>
-              <option value="Traffic">Traffic Alert</option>
-              <option value="Hazard">Weather Hazard</option>
-              <option value="Utility">Power / Utility</option>
+              {Object.entries(CATEGORY_META).map(([key, meta]) => (
+                <option key={key} value={key}>
+                  {meta.label}
+                </option>
+              ))}
             </select>
+
             <input
               type="text"
-              placeholder="Describe what's happening right now..."
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500"
+              placeholder="Short description (e.g. Heavy traffic jam on NH-19)..."
+              maxLength={80}
+              className="flex-1 min-w-[180px] bg-[#0d1323] border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
             />
+
             <button
               type="submit"
-              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs px-4 py-1.5 rounded-lg cursor-pointer"
+              disabled={!draftPos || !title.trim() || submitting}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-bold transition cursor-pointer flex items-center gap-1.5"
             >
-              Publish Live
+              <Send className="w-3.5 h-3.5" />
+              {submitting ? 'Saving...' : 'Publish'}
             </button>
-          </motion.form>
-        )}
-      </AnimatePresence>
+          </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <div className="md:col-span-3 h-64 rounded-xl overflow-hidden border border-slate-800 z-0">
-          <MapContainer
-            center={mapCenter}
-            zoom={13}
-            style={{ height: '100%', width: '100%' }}
-            zoomControl={false}
-          >
-            <TileLayer
-  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-/>
-            <RecenterMap center={mapCenter} />
-            {incidents.map((inc) => {
-              const pinPosition: LatLngExpression = [inc.lat, inc.lon];
-              return (
-                <CircleMarker
-                  key={inc.id}
-                  center={pinPosition}
-                  radius={9}
-                  pathOptions={{
-                    color: inc.type === 'Event' ? '#06b6d4' : '#f59e0b',
-                    fillOpacity: 0.7,
-                  }}
-                >
-                  <Popup>
-                    <div className="text-slate-900 text-xs font-sans">
-                      <strong>[{inc.type}]</strong> {inc.title}
-                    </div>
-                  </Popup>
-                </CircleMarker>
-              );
-            })}
-          </MapContainer>
-        </div>
+          {submitError && (
+            <p className="text-rose-400 font-mono text-[11px] flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5" /> {submitError}
+            </p>
+          )}
+        </form>
+      )}
 
-        <div className="md:col-span-2 space-y-2.5 max-h-64 overflow-y-auto pr-1">
-          {incidents.map((inc) => (
-            <motion.div
-              layout
-              key={inc.id}
-              className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-3 flex flex-col justify-between gap-2"
-            >
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-medium">
-                  {inc.type}
-                </span>
-                <span className="text-slate-500">{inc.timestamp}</span>
-              </div>
-              <p className="text-xs text-slate-200 leading-relaxed">{inc.title}</p>
-              <button
-                type="button"
-                onClick={() => upvoteIncident(inc.id)}
-                className="self-start text-[11px] text-slate-400 hover:text-emerald-400 flex items-center gap-1 transition cursor-pointer"
+      {/* Map Canvas */}
+      <div className="relative h-[420px] rounded-xl overflow-hidden border border-slate-800 z-0">
+        <MapContainer
+          center={[coords.lat, coords.lon]}
+          zoom={11}
+          style={{ height: '100%', width: '100%' }}
+        >
+          <MapCenterSync
+            lat={coords.lat}
+            lon={coords.lon}
+            triggerKey={`${coords.lat}-${coords.lon}`}
+          />
+          <MapClickHandler
+            enabled={isPinMode}
+            onPick={(lat, lon) => setDraftPos({ lat, lon })}
+          />
+
+          <TileLayer
+            attribution="&copy; OpenStreetMap"
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            className="titan-dark-tiles"
+          />
+
+          {/* Draft Pin Preview */}
+          {draftPos && <Marker position={[draftPos.lat, draftPos.lon]} icon={draftPinIcon} />}
+
+          {/* Live KV Community Incident Pins */}
+          {incidents.map((pin) => {
+            const meta = CATEGORY_META[pin.category] ?? CATEGORY_META.community;
+            return (
+              <CircleMarker
+                key={pin.id}
+                center={[pin.lat, pin.lon]}
+                radius={8}
+                pathOptions={{
+                  color: meta.color,
+                  fillColor: meta.color,
+                  fillOpacity: 0.75,
+                  weight: 2,
+                }}
               >
-                <ThumbsUp className="w-3 h-3" /> Verify ({inc.upvotes})
-              </button>
-            </motion.div>
+                <Popup>
+                  <div className="text-slate-900 text-xs font-sans space-y-1 min-w-[160px]">
+                    <div className="font-bold text-sm">{pin.title}</div>
+                    <div className="font-semibold" style={{ color: meta.color }}>
+                      {meta.label}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {new Date(pin.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            );
+          })}
+        </MapContainer>
+
+        {/* Legend */}
+        <div className="absolute bottom-3 left-3 z-[400] bg-[#0b1120]/90 backdrop-blur-sm border border-slate-800 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-3 text-[10px] font-mono text-slate-300">
+          {Object.entries(CATEGORY_META).map(([key, meta]) => (
+            <span key={key} className="flex items-center gap-1">
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: meta.color }}
+              />
+              {meta.label.split(' ')[0]}
+            </span>
           ))}
         </div>
       </div>
-    </motion.section>
+    </motion.div>
   );
-};
+}
