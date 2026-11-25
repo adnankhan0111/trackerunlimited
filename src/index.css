@@ -19,3 +19,6 @@ body {
 .leaflet-control-attribution {
   filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
 }
+.titan-dark-tiles {
+  filter: invert(100%) hue-rotate(180deg) brightness(90%) contrast(95%) saturate(60%);
+}
