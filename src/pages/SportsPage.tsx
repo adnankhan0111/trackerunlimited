@@ -11,6 +11,9 @@ import {
   Clock,
   CheckCircle2,
   MapPin,
+  Flag,
+  KeyRound,
+  AlertTriangle,
 } from 'lucide-react';
 import { useSeoSchema } from '../hooks/useSeoSchema';
 
@@ -26,6 +29,7 @@ interface MatchItem {
   id: string;
   league: string;
   sport: string;
+  eventTitle?: string;
   date: string;
   state: 'live' | 'upcoming' | 'completed';
   statusText: string;
@@ -36,6 +40,7 @@ interface MatchItem {
 
 interface SportsApiResponse {
   updatedAt?: string;
+  cricketConfigured?: boolean;
   total?: number;
   matches?: MatchItem[];
 }
@@ -45,6 +50,7 @@ const LEAGUES = [
   { id: 'cricket', label: 'Cricket (All)' },
   { id: 'soccer', label: 'Football (All)' },
   { id: 'epl', label: 'Premier League' },
+  { id: 'laliga', label: 'La Liga' },
   { id: 'ucl', label: 'Champions League' },
   { id: 'nhl', label: 'Hockey (NHL)' },
   { id: 'f1', label: 'Formula 1' },
@@ -52,6 +58,7 @@ const LEAGUES = [
   { id: 'nba', label: 'NBA' },
   { id: 'ufc', label: 'UFC / MMA' },
   { id: 'nfl', label: 'NFL' },
+  { id: 'mlb', label: 'MLB' },
 ];
 
 const fetcher = (url: string) =>
@@ -81,7 +88,7 @@ export function SportsPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'live' | 'upcoming' | 'completed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const { data, isLoading } = useSWR<SportsApiResponse>(
+  const { data, error, isLoading } = useSWR<SportsApiResponse>(
     `/api/sports?league=${league}&date=${dateYmd}`,
     fetcher,
     {
@@ -91,9 +98,9 @@ export function SportsPage() {
   );
 
   useSeoSchema({
-    title: 'Live Sports Scoreboard — Real-Time Football, NBA, NFL, NHL & Global Leagues',
+    title: 'Live Sports Scoreboard — Cricket, Football, Formula 1, Hockey, NBA & Global Leagues',
     description:
-      'Real-time live sports scores, completed match results, and upcoming schedules across Premier League, Champions League, La Liga, NBA, NFL, NHL, and MLB.',
+      'Real-time live sports scores, completed match results, and upcoming schedules across Cricket, Premier League, Champions League, Formula 1, NHL, Tennis, UFC, NBA, and NFL.',
     schema: {
       '@context': 'https://schema.org',
       '@type': 'SportsOrganization',
@@ -102,6 +109,8 @@ export function SportsPage() {
   });
 
   const matches = useMemo(() => data?.matches ?? [], [data]);
+  const showCricketSetupNotice =
+    !error && league === 'cricket' && data !== undefined && data.cricketConfigured === false;
 
   const counts = useMemo(() => {
     let live = 0;
@@ -124,7 +133,8 @@ export function SportsPage() {
         m.home.name.toLowerCase().includes(q) ||
         m.away.name.toLowerCase().includes(q) ||
         m.league.toLowerCase().includes(q) ||
-        m.sport.toLowerCase().includes(q)
+        m.sport.toLowerCase().includes(q) ||
+        (m.eventTitle && m.eventTitle.toLowerCase().includes(q))
       );
     });
   }, [matches, statusFilter, searchQuery]);
@@ -182,7 +192,7 @@ export function SportsPage() {
               <Trophy className="w-4 h-4" /> Global Live Sports &amp; Fixtures Hub
             </h1>
             <p className="text-xs text-slate-400">
-              30-second live scoreboards, past results &amp; future schedules across major world leagues
+              30-second live scoreboards, past results &amp; future schedules across Cricket, Football, Formula 1, Hockey &amp; more
             </p>
           </div>
 
@@ -193,8 +203,8 @@ export function SportsPage() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search team or league..."
-                className="bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-100 focus:outline-none w-44 sm:w-56"
+                placeholder="Search team, GP, or league..."
+                className="bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-100 focus:outline-none w-48 sm:w-56"
               />
             </div>
 
@@ -271,8 +281,47 @@ export function SportsPage() {
         </div>
       </div>
 
+      {/* API Error Banner (e.g. running on localhost:5173 without Wrangler) */}
+      {error && (
+        <div className="bg-rose-950/30 border border-rose-500/40 rounded-2xl p-4 flex items-start gap-3 text-xs text-rose-200 font-mono">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          <div>
+            <strong className="text-rose-300 block mb-0.5">Live Sports API Offline</strong>
+            <span>
+              Could not reach <code>/api/sports</code>. Deploy to Cloudflare Pages or run{' '}
+              <code>npx wrangler pages dev dist</code> locally to load live scoreboards.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Cricket API Key Setup Notice */}
+      {showCricketSetupNotice && (
+        <div className="bg-amber-950/30 border border-amber-500/40 rounded-2xl p-5 flex items-start gap-3 text-xs text-amber-100">
+          <KeyRound className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1.5">
+            <h2 className="font-bold text-amber-300 uppercase tracking-wider">
+              Enable Live Cricket Feed (Free 1-Minute Setup)
+            </h2>
+            <p className="text-slate-300 leading-relaxed">
+              International, IPL, and domestic cricket scores require a free API key from{' '}
+              <a
+                href="https://cricketdata.org"
+                target="_blank"
+                rel="noreferrer"
+                className="text-cyan-400 underline hover:text-cyan-300"
+              >
+                cricketdata.org
+              </a>
+              . Add it in your <strong>Cloudflare Pages Dashboard -&gt; Settings -&gt; Environment Variables</strong>{' '}
+              as <code className="bg-slate-950 px-1.5 py-0.5 rounded text-amber-300">CRICKETDATA_API_KEY</code> and redeploy.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Matches Grid */}
-      {filteredMatches.length === 0 ? (
+      {!showCricketSetupNotice && filteredMatches.length === 0 ? (
         <div className="bg-[#0d1323] border border-slate-800 rounded-2xl p-10 text-center font-mono text-xs text-slate-400">
           {isLoading
             ? 'Syncing live global scoreboards...'
@@ -291,9 +340,9 @@ export function SportsPage() {
             >
               {/* Card Header */}
               <div className="flex items-center justify-between text-[11px] font-mono">
-                <span className="text-slate-400 truncate max-w-[65%]">{m.league}</span>
+                <span className="text-slate-400 truncate max-w-[62%]">{m.league}</span>
                 <span
-                  className={`px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                  className={`px-2 py-0.5 rounded-full font-bold flex items-center gap-1 shrink-0 ${
                     m.state === 'live'
                       ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
                       : m.state === 'completed'
@@ -308,7 +357,15 @@ export function SportsPage() {
                 </span>
               </div>
 
-              {/* Teams & Scores */}
+              {/* Formula 1 Grand Prix / UFC Event Title Banner */}
+              {m.eventTitle && (
+                <div className="flex items-center gap-1.5 text-xs font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 rounded-lg">
+                  <Flag className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{m.eventTitle}</span>
+                </div>
+              )}
+
+              {/* Teams / Drivers & Scores */}
               <div className="space-y-2.5 font-mono text-xs">
                 {[m.home, m.away].map((team, idx) => (
                   <div
@@ -337,7 +394,7 @@ export function SportsPage() {
                       </span>
                     </div>
                     <span
-                      className={`text-sm font-bold ml-2 ${
+                      className={`text-sm font-bold ml-2 shrink-0 ${
                         m.state === 'upcoming'
                           ? 'text-slate-500'
                           : team.winner
@@ -353,7 +410,7 @@ export function SportsPage() {
 
               {/* Footer: Kickoff & Venue */}
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1 border-t border-slate-800/60">
-                <span className="truncate max-w-[60%] flex items-center gap-1">
+                <span className="truncate max-w-[65%] flex items-center gap-1">
                   <MapPin className="w-3 h-3 shrink-0" /> {m.venue}
                 </span>
                 <span>
